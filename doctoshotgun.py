@@ -18,6 +18,7 @@ import cloudscraper
 import colorama
 from requests.adapters import ReadTimeout, ConnectionError
 from termcolor import colored
+from urllib import parse
 from urllib3.exceptions import NewConnectionError
 
 from woob.browser.exceptions import ClientError, ServerError, HTTPNotFound
@@ -25,6 +26,9 @@ from woob.browser.browsers import LoginBrowser
 from woob.browser.url import URL
 from woob.browser.pages import JsonPage, HTMLPage
 from woob.tools.log import createColoredFormatter
+
+
+from abc import ABC, abstractmethod
 
 SLEEP_INTERVAL_AFTER_CONNECTION_ERROR = 5
 SLEEP_INTERVAL_AFTER_LOGIN_ERROR = 10
@@ -94,6 +98,34 @@ class CentersPage(HTMLPage):
             data = json.loads(div.attrib['data-props'])
             yield data['searchResultId']
 
+    def get_next_page(self):
+        # French doctolib uses data-u attribute of span-element to create the link when user hovers span
+        for span in self.doc.xpath('//div[contains(@class, "next")]/span'):
+            if not span.attrib.has_key('data-u'):
+                continue
+
+            # How to find the corresponding javascript-code:
+            # Press F12 to open dev-tools, select elements-tab, find div.next, right click on element and enable break on substructure change
+            # Hover "Next" element and follow callstack upwards
+            # JavaScript:
+            # var t = (e = r()(e)).data("u")
+            #     , n = atob(t.replace(/\s/g, '').split('').reverse().join(''));
+            
+            import base64
+            href = base64.urlsafe_b64decode(''.join(span.attrib['data-u'].split())[::-1]).decode()
+            query = dict(parse.parse_qsl(parse.urlsplit(href).query))
+
+            if 'page' in query:
+                return int(query['page'])
+
+        for a in self.doc.xpath('//div[contains(@class, "next")]/a'):
+            href = a.attrib['href']
+            query = dict(parse.parse_qsl(parse.urlsplit(href).query))
+
+            if 'page' in query:
+                return int(query['page'])
+        
+        return None
 
 class CenterResultPage(JsonPage):
     pass
@@ -185,6 +217,89 @@ class CityNotFound(Exception):
     pass
 
 
+class Dosenumber:
+    def dose_status(self,DN= None):
+     if dn is None:
+         data = {}
+     else:
+         self.DN = DN
+    
+    def fullyvaccinated_status(self, DN):
+        self.DN=DN
+        pass
+    
+class DN_first(Dosenumber):
+    def dose_status(self, DN):
+            DN =1
+            print(" Dose number staus is 1")
+    
+    def fullyvaccinated_status(self,DN):
+        # if DN == 1 || DN ==0 
+            print(" Not fully vaccinated yet")
+
+class DN_second(Dosenumber):
+     def dose_status(self,DN):
+            DN =1;
+            print(" Dose number staus is 2")
+    
+     def fullyvaccinated_status(self, DN):
+         print(" fully vaccinated!!!")
+
+class DN_third(Dosenumber):
+         def dose_status(self,DN):
+            DN =1;
+            print(" Dose number staus is 3")
+    
+         def fullyvaccinated_status(self, DN):
+            print(" fully vaccinated - 3rd dose not mandatory yet")
+      
+      
+class Vaccine_type:
+    def __init__(self, Dosenumber):
+        self.Dosenumber = Dosenumber
+    
+    def dose_number(self):
+        pass
+    
+class vaccine_pfizer(Vaccine_type):
+   
+    def __init__(self, Dosenumber, objects):
+        super().__init__(Dosenumber)
+        self.objects = objects
+
+    def dose_number(self):
+        self.Dosenumber.dose_status(self.objects)
+
+    def add_objects(self, new_objects):
+        self.objects += new_objects   
+
+class vaccine_Moderna(Vaccine_type):
+    def __init__(self, Dosenumber, objects):
+        super().__init__(Dosenumber)
+        self.objects = objects
+
+    def dose_number(self):
+        self.Dosenumber.dose_status(self.objects)
+
+    def add_objects(self, new_objects):
+        self.objects += new_objects   
+
+class vaccine_astrazeneca(Vaccine_type):
+    def __init__(self, Dosenumber, objects):
+            super().__init__(Dosenumber)
+            self.objects = objects
+
+    def dose_number(self):
+        self.Dosenumber.dose_status(self.objects)
+
+    def add_objects(self, new_objects):
+        self.objects += new_objects   
+
+
+vaccine = Vaccine_type()
+dosenumber = Dosenumber()
+
+
 class Doctolib(LoginBrowser):
     # individual properties for each country. To be defined in subclasses
     BASEURL = ""
@@ -264,13 +379,13 @@ class Doctolib(LoginBrowser):
 
         return True
 
-    def find_centers(self, where, motives=None):
+    def find_centers(self, where, motives=None, page=1):
         if motives is None:
             motives = self.vaccine_motives.keys()
         for city in where:
             try:
                 self.centers.go(where=city, params={
-                                'ref_visit_motive_ids[]': motives})
+                                'ref_visit_motive_ids[]': motives, 'page': page})
             except ServerError as e:
                 if e.response.status_code in [503]:
                     if 'text/html' in e.response.headers['Content-Type'] \
@@ -284,6 +399,8 @@ class Doctolib(LoginBrowser):
                 raise
             except HTTPNotFound as e:
                 raise CityNotFound(city) from e
+
+            next_page = self.page.get_next_page()
 
             for i in self.page.iter_centers_ids():
                 page = self.center_result.open(
@@ -299,6 +416,10 @@ class Doctolib(LoginBrowser):
                     yield page.doc['search_result']
                 except KeyError:
                     pass
+
+            if next_page:
+                for center in self.find_centers(where, motives, next_page):
+                    yield center
 
     def get_patients(self):
         self.master_patient.go()
